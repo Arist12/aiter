@@ -686,6 +686,13 @@ void get_mla_metadata_v1_1_device(const torch::Tensor& seqlens_qo_indptr, // [ba
         num_heads      = 16;
         num_batches *= qk_batch_ratio;
     }
+    else if((num_heads != 16) && (num_heads != 128) && (16 % num_heads == 0) && (num_heads < 16))
+    {
+        // For num_heads < 16 that divide 16 (e.g., 8), treat as 16 heads
+        qk_batch_ratio = 16 / num_heads;
+        num_batches = (num_batches + qk_batch_ratio - 1) / qk_batch_ratio;
+        num_heads = 16;
+    }
 
     if(is_sparse)
     {
@@ -696,7 +703,7 @@ void get_mla_metadata_v1_1_device(const torch::Tensor& seqlens_qo_indptr, // [ba
     TORCH_CHECK((num_heads == 16) || (num_heads == 128),
                 __func__,
                 ": only supports #heads in [16, 128], or (#head, uni_seqlen_qo) = (16*N, 1) where "
-                "N is in [2, 8).")
+                "N is in [2, 8), or #heads that divide 16 (e.g., 8, 4).")
 
     const int32_t lds_size_in_bytes = [&]() {
         const int32_t qo_tile_per_batch = ck_tile::integer_divide_ceil(

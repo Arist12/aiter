@@ -298,6 +298,37 @@ def mla_decode_fwd(
         ):
             # Natively support cases
             pass
+        elif nhead == 8:
+            # Pad 8 heads to 16 heads, run kernel, then slice back
+            # This allows using the natively supported nhead=16 kernel
+            q_orig_shape = q.shape
+            o_orig_shape = o.shape
+            
+            # Pad q from 8 heads to 16 heads (zero-pad the extra 8 heads)
+            if max_seqlen_q == 1:
+                q_padded = torch.zeros(
+                    (q.shape[0], 16, q.shape[2]), dtype=q.dtype, device=q.device
+                )
+                q_padded[:, :8, :] = q
+                q = q_padded
+            else:
+                q_padded = torch.zeros(
+                    (q.shape[0] // max_seqlen_q, max_seqlen_q, 16, q.shape[-1]),
+                    dtype=q.dtype, device=q.device
+                )
+                q_padded[:, :, :8, :] = q.reshape(q.shape[0] // max_seqlen_q, max_seqlen_q, 8, q.shape[-1])
+                q = q_padded.reshape(-1, 16, q.shape[-1])
+            
+            # Create padded output buffer
+            o_padded = torch.zeros(
+                (o.shape[0], 16, o.shape[2]), dtype=o.dtype, device=o.device
+            )
+            o_orig = o
+            o = o_padded
+            
+            # Update nhead for kernel call
+            nhead = 16
+            io_transformed = True
         elif nhead in range(32, 128 + 1, 16) and persistent_mode:
             # we use nhead=16 to simulate such cases by customized metadata
             # metadata also views qo's tensor as shape (total_s * (nhead // 16), 16, ...)
@@ -377,7 +408,18 @@ def mla_decode_fwd(
         if return_logits:
             logits = logits.view(-1, 1, ori_nhead, v_head_dim)
 
-        if max_seqlen_q == 1:
+        # Special handling for nhead=8 -> 16 padding case
+        if ori_nhead == 8 and nhead == 16:
+            # Slice output from 16 heads back to 8 heads
+            if max_seqlen_q == 1:
+                o = o[:, :8, :].contiguous()
+                o_orig.set_(o)
+            else:
+                # Reshape and slice
+                o = o.reshape(ori_total_s, 16, -1)[:, :8, :].contiguous()
+                o_orig.set_(o)
+            o = o_orig
+        elif max_seqlen_q == 1:
             q = q.view(ori_total_s, ori_nhead, -1)
             o = o.view(ori_total_s, ori_nhead, -1)
         else:

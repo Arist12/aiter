@@ -456,18 +456,26 @@ void get_mla_metadata_v1_2_device(const torch::Tensor& seqlens_qo_indptr, // [ba
                                      kv_is_fp8 && (max_seqlen_qo == 4)) ||
                                     ((num_heads == 128) && q_is_fp8 && kv_is_fp8);
 
+    // Handle num_heads that divide 16 evenly (e.g., 8, 4) by treating as 16 heads
     if((natively_supported == false) && (num_heads % 16 == 0))
     {
         qk_batch_ratio = num_heads / 16;
         num_heads      = 16;
         num_batches *= qk_batch_ratio;
     }
+    else if((natively_supported == false) && (16 % num_heads == 0) && (num_heads < 16))
+    {
+        // For num_heads < 16 that divide 16 (e.g., 8), treat as 16 heads with reduced batches
+        qk_batch_ratio = 16 / num_heads;
+        num_batches = (num_batches + qk_batch_ratio - 1) / qk_batch_ratio;
+        num_heads = 16;
+    }
 
     TORCH_CHECK((num_heads == 16) || (num_heads == 128) ||
                     ((num_heads == 32) && q_is_fp8 && kv_is_fp8),
                 __func__,
                 ": only supports #heads in [16, 128], or (#head, uni_seqlen_qo) = (16*N, 1) where "
-                "N is in [2, 8).")
+                "N is in [2, 8), or #heads that divide 16 (e.g., 8, 4).")
 
     int32_t num_splits = max_split_per_batch < 0
                              ? num_clusters
